@@ -1507,9 +1507,22 @@
                     const cloudMultipliers = rows.find(r => r[0] === 'customMultipliers');
                     const cloudSheetData = rows.find(r => r[0] === 'sheetData');
                     const cloudCart = rows.find(r => r[0] === 'currentCart');
-                    const cloudRequester = rows.find(r => r[0] === 'activeRequester');
+                    const cloudRequester = rows.find(r => r[0] === 'activeRequester'); // Sync dos botões Luigi/João
 
-                    // Comparação profunda para evitar re-renderização desnecessária
+                    // 1. Sincronizar Requisitante Ativo (Botões)
+                    if (cloudRequester && cloudRequester[1] !== state.activeRequester) {
+                        state.activeRequester = cloudRequester[1];
+                        updateRequisitanteButtonsUI(state.activeRequester);
+                        dataChanged = true;
+                    }
+
+                    // 2. Sincronizar Nomes Alterados (Manual Overrides)
+                    if (cloudOverrides && cloudOverrides[1] !== JSON.stringify(state.manualOverrides)) {
+                        state.manualOverrides = JSON.parse(cloudOverrides[1]);
+                        localStorage.setItem('stockManualOverrides', cloudOverrides[1]);
+                        dataChanged = true;
+                    }
+
                     if (cloudSettings && cloudSettings[1] !== JSON.stringify({
                         defaultDepot: state.defaultDepot,
                         allowDuplicates: state.allowDuplicates,
@@ -1521,18 +1534,6 @@
                         state.allowDuplicates = settings.allowDuplicates;
                         state.hidePrices = settings.hidePrices;
                         state.compactMode = settings.compactMode;
-                        dataChanged = true;
-                    }
-
-                    if (cloudOverrides && cloudOverrides[1] !== JSON.stringify(state.manualOverrides)) {
-                        state.manualOverrides = JSON.parse(cloudOverrides[1]);
-                        localStorage.setItem('stockManualOverrides', cloudOverrides[1]);
-                        dataChanged = true;
-                    }
-
-                    if (cloudMultipliers && cloudMultipliers[1] !== JSON.stringify(state.customMultipliers)) {
-                        state.customMultipliers = JSON.parse(cloudMultipliers[1]);
-                        localStorage.setItem('stockCustomMultipliers', cloudMultipliers[1]);
                         dataChanged = true;
                     }
 

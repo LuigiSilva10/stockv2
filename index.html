@@ -898,6 +898,26 @@
             }
         }
 
+        async function syncHistoryFromCloud() {
+            try {
+                const cloudHistory = await executeTurso([{ sql: "SELECT content FROM history ORDER BY id DESC LIMIT 50", args: [] }]);
+                if (cloudHistory && cloudHistory.results[0].response.result.rows.length > 0) {
+                    const rows = cloudHistory.results[0].response.result.rows;
+                    const orders = rows.map(r => JSON.parse(r[0]));
+                    
+                    // Comparação simples para evitar re-renderização desnecessária se os dados forem os mesmos
+                    if (JSON.stringify(orders) !== JSON.stringify(state.orderHistory)) {
+                        state.orderHistory = orders;
+                        localStorage.setItem('stockOrderHistory', JSON.stringify(state.orderHistory));
+                        if (state.currentView === 'history') renderHistory();
+                        console.log('Histórico sincronizado com a nuvem.');
+                    }
+                }
+            } catch (err) {
+                console.error("Erro ao sincronizar histórico com a nuvem:", err);
+            }
+        }
+
         // Base de Conhecimento Técnica (Extraída do testando.html)
         const TECHNICAL_DATABASE = [
             { type: "Aço Inox", regex: /\b(AI304|A304|AISI304|304L|AI316|A316|AISI316|316L|AI303|A303|AI309|A309)\b/gi, color: "text-blue-500 dark:text-blue-400", rowStyle: "" },

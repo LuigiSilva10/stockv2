@@ -1230,7 +1230,10 @@
             console.log('Iniciando aplicação...');
 
             // Inicializar tabela no Turso se necessário
-            await executeTurso([{ sql: "CREATE TABLE IF NOT EXISTS app_data (id TEXT PRIMARY KEY, content TEXT)", args: [] }]);
+            await executeTurso([
+                { sql: "CREATE TABLE IF NOT EXISTS app_data (id TEXT PRIMARY KEY, content TEXT)", args: [] },
+                { sql: "CREATE TABLE IF NOT EXISTS history (id TEXT PRIMARY KEY, content TEXT, requisitante TEXT)", args: [] }
+            ]);
             
             // Map elements
             elements = {
@@ -1378,23 +1381,12 @@
             
             // Load persisted data
             try {
-                // Tentar carregar dados do Turso primeiro
-                const cloudData = await executeTurso([{ sql: "SELECT id, content FROM app_data", args: [] }]);
-                if (cloudData && cloudData.results[0].response.result.rows.length > 0) {
-                    const rows = cloudData.results[0].response.result.rows;
-                    const cloudHistory = rows.find(r => r[0] === 'orderHistory');
-                    const cloudSettings = rows.find(r => r[0] === 'settings');
+                // Carregar Overrides e Multiplicadores locais como fallback inicial
+                const savedOverrides = localStorage.getItem('stockManualOverrides');
+                if (savedOverrides) state.manualOverrides = JSON.parse(savedOverrides);
 
-                    if (cloudHistory) state.orderHistory = JSON.parse(cloudHistory[1]);
-                    if (cloudSettings) {
-                        const settings = JSON.parse(cloudSettings[1]);
-                        state.defaultDepot = settings.defaultDepot || 'E99';
-                        state.allowDuplicates = settings.allowDuplicates;
-                        state.hidePrices = settings.hidePrices;
-                        state.compactMode = settings.compactMode;
-                    }
-                    console.log('Dados sincronizados com a nuvem (Turso).');
-                }
+                const savedMultipliers = localStorage.getItem('stockCustomMultipliers');
+                if (savedMultipliers) state.customMultipliers = JSON.parse(savedMultipliers);
 
                 const savedCart = localStorage.getItem('stockCart');
                 if (savedCart && savedCart !== "undefined") {
@@ -1404,21 +1396,17 @@
                         updateCartUI();
                     }
                 }
+
+                // Sincronização inicial completa com a nuvem
+                await syncAppDataFromCloud();
                 
+                // Sincronizar histórico da nova tabela
+                await syncHistoryFromCloud();
+
                 // Fallback local se a nuvem falhar
                 const savedHistory = localStorage.getItem('stockOrderHistory');
                 if (savedHistory) {
                     if (state.orderHistory.length === 0) state.orderHistory = JSON.parse(savedHistory);
-                }
-
-                const savedOverrides = localStorage.getItem('stockManualOverrides');
-                if (savedOverrides) {
-                    state.manualOverrides = JSON.parse(savedOverrides);
-                }
-
-                const savedMultipliers = localStorage.getItem('stockCustomMultipliers');
-                if (savedMultipliers) {
-                    state.customMultipliers = JSON.parse(savedMultipliers);
                 }
 
                 const savedHeaders = localStorage.getItem('stockHeaders');
@@ -1444,6 +1432,62 @@
             
             if (typeof lucide !== 'undefined') {
                 lucide.createIcons();
+            }
+
+            // Configurar sincronização automática a cada 3 segundos (Quase tempo real)
+            setInterval(async () => {
+                if (state.currentView !== 'tech') { // Evita atualizar enquanto o usuário digita no identificador
+                    await syncAppDataFromCloud();
+                    await syncHistoryFromCloud();
+                }
+            }, 3000);
+        }
+
+        async function syncAppDataFromCloud() {
+            try {
+                const cloudData = await executeTurso([{ sql: "SELECT id, content FROM app_data", args: [] }]);
+                if (cloudData && cloudData.results[0].response.result.rows.length > 0) {
+                    const rows = cloudData.results[0].response.result.rows;
+                    let dataChanged = false;
+                    
+                    const cloudSettings = rows.find(r => r[0] === 'settings');
+                    const cloudOverrides = rows.find(r => r[0] === 'manualOverrides');
+                    const cloudMultipliers = rows.find(r => r[0] === 'customMultipliers');
+
+                    // Comparação profunda para evitar re-renderização desnecessária
+                    if (cloudSettings && cloudSettings[1] !== JSON.stringify({
+                        defaultDepot: state.defaultDepot,
+                        allowDuplicates: state.allowDuplicates,
+                        hidePrices: state.hidePrices,
+                        compactMode: state.compactMode
+                    })) {
+                        const settings = JSON.parse(cloudSettings[1]);
+                        state.defaultDepot = settings.defaultDepot || 'E99';
+                        state.allowDuplicates = settings.allowDuplicates;
+                        state.hidePrices = settings.hidePrices;
+                        state.compactMode = settings.compactMode;
+                        dataChanged = true;
+                    }
+
+                    if (cloudOverrides && cloudOverrides[1] !== JSON.stringify(state.manualOverrides)) {
+                        state.manualOverrides = JSON.parse(cloudOverrides[1]);
+                        localStorage.setItem('stockManualOverrides', cloudOverrides[1]);
+                        dataChanged = true;
+                    }
+
+                    if (cloudMultipliers && cloudMultipliers[1] !== JSON.stringify(state.customMultipliers)) {
+                        state.customMultipliers = JSON.parse(cloudMultipliers[1]);
+                        localStorage.setItem('stockCustomMultipliers', cloudMultipliers[1]);
+                        dataChanged = true;
+                    }
+
+                    if (dataChanged) {
+                        if (state.currentView === 'table' && state.allData.length > 0) renderTable();
+                        console.log('App Data sincronizado (Mudanças detectadas).');
+                    }
+                }
+            } catch (err) {
+                console.error("Erro na sincronização automática:", err);
             }
         }
         
@@ -2886,10 +2930,10 @@
             
             localStorage.setItem('stockOrderHistory', JSON.stringify(state.orderHistory));
             
-            // Salva no Turso
+            // Salva na nova tabela de histórico individualmente para compartilhar com outros usuários
             executeTurso([{ 
-                sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", 
-                args: [{type: "text", value: "orderHistory"}, {type: "text", value: JSON.stringify(state.orderHistory)}] 
+                sql: "INSERT INTO history (id, content, requisitante) VALUES (?, ?, ?)", 
+                args: [{type: "text", value: String(newOrder.id)}, {type: "text", value: JSON.stringify(newOrder)}, {type: "text", value: requesterName}] 
             }]);
         }
 
@@ -2902,7 +2946,6 @@
                 compactMode: state.compactMode
             };
             await executeTurso([
-                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "orderHistory"}, {type: "text", value: JSON.stringify(state.orderHistory)}] },
                 { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "settings"}, {type: "text", value: JSON.stringify(settings)}] }
             ]);
             showToast('success', 'Sincronizado', 'Histórico e configurações salvos no Turso.');
@@ -3108,6 +3151,10 @@
             showDialog('warning', 'Excluir Registro', 'Deseja remover esta requisição do seu histórico?', () => {
                 state.orderHistory = state.orderHistory.filter(o => o.id !== orderId);
                 localStorage.setItem('stockOrderHistory', JSON.stringify(state.orderHistory));
+                executeTurso([{ 
+                    sql: "DELETE FROM history WHERE id = ?", 
+                    args: [{type: "text", value: String(orderId)}] 
+                }]);
                 renderHistory();
                 showToast('success', 'Excluído', 'O registro foi removido do histórico.');
             });
@@ -3117,6 +3164,9 @@
             showDialog('warning', 'Limpar Histórico', 'Deseja apagar permanentemente todos os registros de cópias anteriores?', () => {
                 state.orderHistory = [];
                 localStorage.removeItem('stockOrderHistory');
+                executeTurso([{ 
+                    sql: "DELETE FROM history", args: [] 
+                }]);
                 renderHistory();
                 showToast('success', 'Histórico Limpo', 'Todos os registros foram removidos.');
             });
@@ -3201,7 +3251,10 @@
             elements.sidebarHistoryBtn.classList.toggle('dark:bg-slate-800', isHistory);
             elements.sidebarHistoryBtn.classList.toggle('dark:text-indigo-400', isHistory);
 
-            if (isHistory) renderHistory();
+            if (isHistory) {
+                renderHistory();
+                syncHistoryFromCloud(); // Busca novidades do banco sempre que abrir o histórico
+            }
 
             if (isSettings) {
                 // Ensure settings values are up-to-date in the UI
@@ -3426,6 +3479,7 @@
                 localStorage.setItem('stockManualOverrides', JSON.stringify(state.manualOverrides));
                 localStorage.setItem('stockCustomMultipliers', JSON.stringify(state.customMultipliers));
 
+                syncDataWithTurso(); // Envia para a nuvem imediatamente após salvar
                 modal.classList.add('hidden');
                 renderTable();
                 showToast('success', 'Configurado', 'Material atualizado com sucesso.');

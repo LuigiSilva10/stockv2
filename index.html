@@ -1249,6 +1249,7 @@
             searchTerm: '',
             historySearchTerm: '',
             historyFilter: 'ALL',
+            lastSheetTimestamp: 0, // Novo: controla a versão da planilha
             visibleCount: 50, // This will be initialized from itemsPerPage
             zoomLevel: 1,
             itemsPerPage: 50,
@@ -1547,11 +1548,12 @@
 
                     if (cloudSheetData) {
                         const sheet = JSON.parse(cloudSheetData[1]);
-                        // Carrega se os dados forem diferentes ou se o local estiver vazio
-                        if (JSON.stringify(sheet.allData) !== JSON.stringify(state.allData) || state.allData.length === 0) {
-                            state.fileName = sheet.fileName; // Preserva o nome para o check acima
-                            await processData(sheet.allData, true); // Processa e detecta colunas corretamente
-                            dataChanged = true;
+                        // Lógica Robusta: Só processa se o timestamp for novo ou se não houver dados locais
+                        if (sheet.timestamp !== state.lastSheetTimestamp || state.allData.length === 0) {
+                            state.lastSheetTimestamp = sheet.timestamp;
+                            state.fileName = sheet.fileName;
+                            state.sheetName = sheet.sheetName;
+                            await processData(sheet.allData, true);
                         }
                     }
 

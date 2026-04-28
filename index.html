@@ -917,20 +917,20 @@
                         return null; // Retorna null para itens que não puderam ser parseados
                     }).filter(Boolean); // Remove itens nulos do array
                     
-                    // Mesclagem inteligente para evitar que itens sumam por delay da nuvem (Race Condition)
+                    // Mesclagem para garantir persistência total
                     const mergedMap = new Map();
                     // 1. Carrega o que veio da nuvem
-                    orders.forEach(o => mergedMap.set(String(o.id), o));
+                    orders.forEach(o => { if(o.id) mergedMap.set(String(o.id), { ...o, id: Number(o.id) }); });
                     
-                    // 2. Preserva itens locais recém-criados (< 60s) que ainda não aparecem na nuvem
-                    const now = Date.now();
+                    // 2. Preserva itens locais que ainda não estão na nuvem sem limite de tempo
                     state.orderHistory.forEach(o => {
-                        if (!mergedMap.has(String(o.id)) && (now - (parseInt(o.id) || 0) < 60000)) {
+                        const oId = String(o.id);
+                        if (!mergedMap.has(oId)) {
                             mergedMap.set(String(o.id), o);
                         }
                     });
 
-                    const finalHistory = Array.from(mergedMap.values()).sort((a, b) => b.id - a.id).slice(0, 50);
+                    const finalHistory = Array.from(mergedMap.values()).sort((a, b) => Number(b.id) - Number(a.id)).slice(0, 50);
 
                     if (JSON.stringify(finalHistory) !== JSON.stringify(state.orderHistory)) {
                         state.orderHistory = finalHistory;
@@ -1538,8 +1538,8 @@
 
                     if (cloudSheetData) {
                         const sheet = JSON.parse(cloudSheetData[1]);
-                        // Só carrega se for um arquivo diferente ou se o local estiver vazio
-                        if (sheet.fileName !== state.fileName || state.allData.length === 0) {
+                        // Carrega se os dados forem diferentes ou se o local estiver vazio
+                        if (JSON.stringify(sheet.allData) !== JSON.stringify(state.allData) || state.allData.length === 0) {
                             state.fileName = sheet.fileName; // Preserva o nome para o check acima
                             await processData(sheet.allData, true); // Processa e detecta colunas corretamente
                             dataChanged = true;
@@ -2957,10 +2957,8 @@
                     btn.className = "flex-1 bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-4 px-10 rounded-xl flex items-center justify-center gap-3 transition-all shadow-lg shadow-indigo-500/20 scale-105";
                     if (typeof lucide !== 'undefined') lucide.createIcons();
 
-                    setTimeout(() => {
-                        showToast('success', 'Copiado para SAP', `${state.cart.length} itens prontos. Use Alt+Tab para ir ao SAP e Cole (Ctrl+V).`);
-                        saveOrderToHistory();
-                    }, 800);
+                    showToast('success', 'Copiado para SAP', `${state.cart.length} itens prontos. Use Alt+Tab para ir ao SAP e Cole (Ctrl+V).`);
+                    saveOrderToHistory();
 
                     // Reset button state after a longer delay
                     setTimeout(() => {
@@ -3027,6 +3025,40 @@
                 { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "currentCart"}, {type: "text", value: JSON.stringify(state.cart)}] }
             ]);
             showToast('success', 'Sincronizado', 'Sistema atualizado para todos os usuários.');
+        }
+
+        function saveOrderToHistory() {
+            if (state.cart.length === 0) return;
+            
+            // Identifica quem está enviando (Luigi, João ou Outros)
+            const activeBtn = Array.from(document.querySelectorAll('.bulk-emp-btn')).find(btn => btn.classList.contains('border-white'));
+            const requesterName = (activeBtn ? activeBtn.getAttribute('data-name') : 'OUTROS').toUpperCase();
+
+            const newOrder = {
+                id: Date.now(),
+                date: new Date().toLocaleString('pt-BR'),
+                itemCount: state.cart.length,
+                requisitante: requesterName,
+                recebedor: (state.cart[0]?.employee || 'NÃO INFORMADO').toUpperCase(),
+                items: JSON.parse(JSON.stringify(state.cart))
+            };
+            
+            // Atualiza localmente para visualização imediata
+            state.orderHistory.unshift(newOrder);
+            if (state.orderHistory.length > 50) state.orderHistory.pop();
+            localStorage.setItem('stockOrderHistory', JSON.stringify(state.orderHistory));
+            
+            // Envia para o Banco de Dados Turso (Permanente)
+            executeTurso([{ 
+                sql: "INSERT OR REPLACE INTO history (id, content, requisitante) VALUES (?, ?, ?)", 
+                args: [
+                    {type: "text", value: String(newOrder.id)}, 
+                    {type: "text", value: JSON.stringify(newOrder)}, 
+                    {type: "text", value: requesterName}
+                ] 
+            }]);
+
+            if (state.currentView === 'history') renderHistory();
         }
 
         function renderHistory() {

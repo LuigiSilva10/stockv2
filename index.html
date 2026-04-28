@@ -905,9 +905,11 @@
                     const rows = cloudHistory.results[0].response.result.rows;
                     const orders = rows.map(r => {
                         try {
-                            // Garante que r[0] é uma string e começa com '{' ou '[' antes de tentar o parse
-                            if (typeof r[0] === 'string' && (r[0].startsWith('{') || r[0].startsWith('['))) {
-                                return JSON.parse(r[0]);
+                            const content = r[0];
+                            if (typeof content === 'string' && content !== "[object Object]") {
+                                if (content.startsWith('{') || content.startsWith('[')) {
+                                    return JSON.parse(content);
+                                }
                             }
                         } catch (e) {
                             console.warn("Erro ao parsear item do histórico da nuvem, pulando:", r[0], e);
@@ -915,12 +917,25 @@
                         return null; // Retorna null para itens que não puderam ser parseados
                     }).filter(Boolean); // Remove itens nulos do array
                     
-                    // Comparação simples para evitar re-renderização desnecessária se os dados forem os mesmos
-                    if (JSON.stringify(orders) !== JSON.stringify(state.orderHistory)) {
-                        state.orderHistory = orders;
+                    // Mesclagem inteligente para evitar que itens sumam por delay da nuvem (Race Condition)
+                    const mergedMap = new Map();
+                    // 1. Carrega o que veio da nuvem
+                    orders.forEach(o => mergedMap.set(String(o.id), o));
+                    
+                    // 2. Preserva itens locais recém-criados (< 60s) que ainda não aparecem na nuvem
+                    const now = Date.now();
+                    state.orderHistory.forEach(o => {
+                        if (!mergedMap.has(String(o.id)) && (now - (parseInt(o.id) || 0) < 60000)) {
+                            mergedMap.set(String(o.id), o);
+                        }
+                    });
+
+                    const finalHistory = Array.from(mergedMap.values()).sort((a, b) => b.id - a.id).slice(0, 50);
+
+                    if (JSON.stringify(finalHistory) !== JSON.stringify(state.orderHistory)) {
+                        state.orderHistory = finalHistory;
                         localStorage.setItem('stockOrderHistory', JSON.stringify(state.orderHistory));
                         if (state.currentView === 'history') renderHistory();
-                        console.log('Histórico sincronizado com a nuvem.');
                     }
                 }
             } catch (err) {
@@ -1516,15 +1531,8 @@
                         const sheet = JSON.parse(cloudSheetData[1]);
                         // Só carrega se for um arquivo diferente ou se o local estiver vazio
                         if (sheet.fileName !== state.fileName || state.allData.length === 0) {
-                            state.fileName = sheet.fileName;
-                            state.sheetName = sheet.sheetName;
-                            state.headers = sheet.headers;
-                            state.allData = sheet.allData;
-                            
-                            // Atualiza cache local
-                            await saveLargeData('stockData', state.allData);
-                            localStorage.setItem('stockHeaders', JSON.stringify(state.headers));
-                            localStorage.setItem('stockMeta', JSON.stringify({ fileName: state.fileName, sheetName: state.sheetName }));
+                            state.fileName = sheet.fileName; // Preserva o nome para o check acima
+                            await processData(sheet.allData, true); // Processa e detecta colunas corretamente
                             dataChanged = true;
                         }
                     }
@@ -2981,7 +2989,7 @@
             
             // Salva na nova tabela de histórico individualmente para compartilhar com outros usuários
             executeTurso([{ 
-                sql: "INSERT INTO history (id, content, requisitante) VALUES (?, ?, ?)", 
+                sql: "INSERT OR REPLACE INTO history (id, content, requisitante) VALUES (?, ?, ?)", 
                 args: [{type: "text", value: String(newOrder.id)}, {type: "text", value: JSON.stringify(newOrder)}, {type: "text", value: requesterName}] 
             }]);
         }
@@ -3009,42 +3017,31 @@
         function renderHistory() {
             if (!elements.historyList) return;
             
-            updateHistoryFilterUI(); // Garante que o botão de filtro correto esteja destacado
+            updateHistoryFilterUI();
             let filteredHistory = state.orderHistory;
+
             if (state.historySearchTerm) {
-                filteredHistory = state.orderHistory.filter(order => {
-                    const term = state.historySearchTerm.toLowerCase();
-                    const inDate = order.date.toLowerCase().includes(term);
-                    const requester = (order.requisitante || '').toLowerCase();
-                    const receiver = (order.recebedor || '').toLowerCase();
-                    const inItems = order.items.some(item => 
-                        item.description.toLowerCase().includes(term) || 
-                        item.materialCode.toLowerCase().includes(term)
-                    );
-                    return inDate || inItems || requester.includes(term) || receiver.includes(term);
-                });
+                const term = state.historySearchTerm.toLowerCase();
+                filteredHistory = filteredHistory.filter(order => 
+                    order.date.toLowerCase().includes(term) || 
+                    (order.requisitante || '').toLowerCase().includes(term) ||
+                    order.items.some(i => i.description.toLowerCase().includes(term))
+                );
             }
 
             if (state.historyFilter !== 'ALL') {
                 filteredHistory = filteredHistory.filter(order => {
                     const name = (order.requisitante || '').toUpperCase();
-                    if (state.historyFilter === 'OUTROS') {
-                        return name !== 'LUIGI' && name !== 'JOÃO';
-                    }
-                    return name === state.historyFilter;
+                    return state.historyFilter === 'OUTROS' ? (name !== 'LUIGI' && name !== 'JOÃO') : name === state.historyFilter;
                 });
             }
 
             if (filteredHistory.length === 0) {
-                elements.historyList.innerHTML = `
-                    <div class="flex flex-col items-center justify-center py-24 text-slate-400 bg-white dark:bg-slate-900/50 rounded-3xl border border-dashed border-slate-200 dark:border-slate-800">
-                        <i data-lucide="search-x" class="w-16 h-16 mb-4 opacity-20"></i>
-                        <p class="font-bold text-lg text-slate-600 dark:text-slate-300">Nenhum registro encontrado</p>
-                        <p class="text-sm opacity-70">${state.historySearchTerm ? 'Tente outros termos de busca.' : 'Suas cópias para o SAP aparecerão aqui.'}</p>
-                    </div>
-                `;
-            } else {
-                elements.historyList.innerHTML = filteredHistory.map(order => {
+                elements.historyList.innerHTML = `<div class="text-center py-20 opacity-50">Nenhum registro encontrado.</div>`;
+                return;
+            }
+
+            elements.historyList.innerHTML = filteredHistory.map(order => {
                     const req = order.requisitante || 'OUTROS';
                     const rec = order.recebedor || 'NÃO INFORMADO';
                     return `
@@ -3077,7 +3074,7 @@
                     </div>
                 </div>
                 `}).join('');
-            }
+            
             if (typeof lucide !== 'undefined') lucide.createIcons();
         }
 

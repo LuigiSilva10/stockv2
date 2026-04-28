@@ -901,14 +901,17 @@
         async function syncHistoryFromCloud() {
             try {
                 const cloudHistory = await executeTurso([{ sql: "SELECT content FROM history ORDER BY id DESC LIMIT 50", args: [] }]);
-                if (cloudHistory && cloudHistory.results[0].response.result.rows.length > 0) {
+                if (cloudHistory && cloudHistory.results && cloudHistory.results[0].type === 'ok' && cloudHistory.results[0].response.result.rows.length > 0) {
                     const rows = cloudHistory.results[0].response.result.rows;
                     const orders = rows.map(r => {
                         try {
                             const content = r[0];
-                            if (typeof content === 'string' && content !== "[object Object]") {
+                            if (typeof content === 'string' && content !== "[object Object]" && content.trim() !== "") {
                                 if (content.startsWith('{') || content.startsWith('[')) {
-                                    return JSON.parse(content);
+                                    const parsed = JSON.parse(content);
+                                    // Normaliza o ID para garantir comparação perfeita
+                                    if (parsed.id) parsed.id = Number(parsed.id);
+                                    return parsed;
                                 }
                             }
                         } catch (e) {
@@ -919,19 +922,20 @@
                     
                     // Mesclagem para garantir persistência total
                     const mergedMap = new Map();
-                    // 1. Carrega o que veio da nuvem
-                    orders.forEach(o => { if(o.id) mergedMap.set(String(o.id), { ...o, id: Number(o.id) }); });
+                    // 1. Carrega o que veio da nuvem primeiro (Verdade absoluta)
+                    orders.forEach(o => { if(o.id) mergedMap.set(String(o.id), o); });
                     
-                    // 2. Preserva itens locais que ainda não estão na nuvem sem limite de tempo
+                    // 2. Preserva itens locais que ainda não subiram (Sync pendente)
                     state.orderHistory.forEach(o => {
                         const oId = String(o.id);
                         if (!mergedMap.has(oId)) {
-                            mergedMap.set(String(o.id), o);
+                            mergedMap.set(oId, { ...o, id: Number(o.id) });
                         }
                     });
 
                     const finalHistory = Array.from(mergedMap.values()).sort((a, b) => Number(b.id) - Number(a.id)).slice(0, 50);
 
+                    // Se o conteúdo é diferente, atualiza a visão
                     if (JSON.stringify(finalHistory) !== JSON.stringify(state.orderHistory)) {
                         state.orderHistory = finalHistory;
                         localStorage.setItem('stockOrderHistory', JSON.stringify(state.orderHistory));
@@ -1479,17 +1483,22 @@
                 lucide.createIcons();
             }
 
-            // Configurar sincronização automática a cada 3 segundos (Quase tempo real)
+            // Configurar sincronização automática a cada 1 segundo (Tempo Real Otimizado)
+            let isSyncing = false;
             setInterval(async () => {
-                await syncAppDataFromCloud();
-                await syncHistoryFromCloud();
-            }, 3000);
+                // Só sincroniza se não houver uma sincronização em curso e se a aba estiver visível
+                if (isSyncing || document.visibilityState !== 'visible') return;
+                
+                isSyncing = true;
+                await Promise.all([syncAppDataFromCloud(), syncHistoryFromCloud()]);
+                isSyncing = false;
+            }, 1000);
         }
 
         async function syncAppDataFromCloud() {
             try {
                 const cloudData = await executeTurso([{ sql: "SELECT id, content FROM app_data", args: [] }]);
-                if (cloudData && cloudData.results[0].response.result.rows.length > 0) {
+                if (cloudData && cloudData.results && cloudData.results[0].type === 'ok' && cloudData.results[0].response.result.rows.length > 0) {
                     const rows = cloudData.results[0].response.result.rows;
                     let dataChanged = false;
                     
@@ -1498,6 +1507,7 @@
                     const cloudMultipliers = rows.find(r => r[0] === 'customMultipliers');
                     const cloudSheetData = rows.find(r => r[0] === 'sheetData');
                     const cloudCart = rows.find(r => r[0] === 'currentCart');
+                    const cloudRequester = rows.find(r => r[0] === 'activeRequester');
 
                     // Comparação profunda para evitar re-renderização desnecessária
                     if (cloudSettings && cloudSettings[1] !== JSON.stringify({
@@ -2974,37 +2984,6 @@
             });
         }
 
-        function saveOrderToHistory() {
-            if (state.cart.length === 0) return;
-            
-            // O Requisitante é o usuário do PCM selecionado nos botões (Luigi, João ou Outros)
-            const activeBtn = Array.from(document.querySelectorAll('.bulk-emp-btn')).find(btn => btn.classList.contains('border-white'));
-            const requesterName = (activeBtn ? activeBtn.getAttribute('data-name') : 'OUTROS').toUpperCase();
-
-            // O Recebedor é quem vai retirar o material (definido no campo employee dos itens)
-            const receiverName = (state.cart[0]?.employee || 'NÃO INFORMADO').toUpperCase();
-
-            const newOrder = {
-                id: Date.now(),
-                date: new Date().toLocaleString('pt-BR'),
-                itemCount: state.cart.length,
-                requisitante: requesterName,
-                recebedor: receiverName,
-                items: JSON.parse(JSON.stringify(state.cart))
-            };
-            
-            state.orderHistory.unshift(newOrder); // Adiciona no início (mais recente primeiro)
-            if (state.orderHistory.length > 50) state.orderHistory.pop(); // Limite de 50 registros
-            
-            localStorage.setItem('stockOrderHistory', JSON.stringify(state.orderHistory));
-            
-            // Salva na nova tabela de histórico individualmente para compartilhar com outros usuários
-            executeTurso([{ 
-                sql: "INSERT OR REPLACE INTO history (id, content, requisitante) VALUES (?, ?, ?)", 
-                args: [{type: "text", value: String(newOrder.id)}, {type: "text", value: JSON.stringify(newOrder)}, {type: "text", value: requesterName}] 
-            }]);
-        }
-
         window.syncDataWithTurso = async function() {
             showToast('info', 'Sincronizando', 'Enviando dados para a nuvem...');
             
@@ -3017,11 +2996,12 @@
             };
 
             await executeTurso([
-                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "settings"}, {type: "text", value: JSON.stringify(settings)}] },
-                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "manualOverrides"}, {type: "text", value: JSON.stringify(state.manualOverrides)}] },
-                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "customMultipliers"}, {type: "text", value: JSON.stringify(state.customMultipliers)}] },
-                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "sheetData"}, {type: "text", value: JSON.stringify(sheetData)}] },
-                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "currentCart"}, {type: "text", value: JSON.stringify(state.cart)}] }
+                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: ["settings", JSON.stringify(settings)] },
+                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: ["manualOverrides", JSON.stringify(state.manualOverrides)] },
+                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: ["customMultipliers", JSON.stringify(state.customMultipliers)] },
+                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: ["sheetData", JSON.stringify(sheetData)] },
+                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: ["currentCart", JSON.stringify(state.cart)] },
+                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: ["activeRequester", state.activeRequester || "OUTROS"] }
             ]);
             showToast('success', 'Sincronizado', 'Sistema atualizado para todos os usuários.');
         }
@@ -3050,11 +3030,7 @@
             // Envia para o Banco de Dados Turso (Permanente)
             executeTurso([{ 
                 sql: "INSERT OR REPLACE INTO history (id, content, requisitante) VALUES (?, ?, ?)", 
-                args: [
-                    {type: "text", value: String(newOrder.id)}, 
-                    {type: "text", value: JSON.stringify(newOrder)}, 
-                    {type: "text", value: requesterName}
-                ] 
+                args: [String(newOrder.id), JSON.stringify(newOrder), requesterName] 
             }]);
 
             if (state.currentView === 'history') renderHistory();
@@ -3251,7 +3227,7 @@
                 localStorage.setItem('stockOrderHistory', JSON.stringify(state.orderHistory));
                 executeTurso([{ 
                     sql: "DELETE FROM history WHERE id = ?", 
-                    args: [{type: "text", value: String(orderId)}] 
+                    args: [String(orderId)] 
                 }]);
                 renderHistory();
                 showToast('success', 'Excluído', 'O registro foi removido do histórico.');
@@ -3627,9 +3603,10 @@
 
             // Se for Requisitante, apenas atualizamos a UI para marcar quem está pedindo (para o Histórico)
             if (field === 'employee') {
+                state.activeRequester = value;
                 updateRequisitanteButtonsUI(value);
-                showToast('info', 'Requisitante do Histórico', `O histórico será registrado em nome de: ${value}`);
                 if (elements.bulkEmployeeInput) elements.bulkEmployeeInput.value = '';
+                syncDataWithTurso(); // Sincroniza a seleção do botão para o amigo ver
                 return; // Interrompe aqui para NÃO alterar a lista de materiais
             }
 

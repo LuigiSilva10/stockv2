@@ -1499,6 +1499,7 @@
                     const cloudOverrides = rows.find(r => r[0] === 'manualOverrides');
                     const cloudMultipliers = rows.find(r => r[0] === 'customMultipliers');
                     const cloudSheetData = rows.find(r => r[0] === 'sheetData');
+                    const cloudCart = rows.find(r => r[0] === 'currentCart');
 
                     // Comparação profunda para evitar re-renderização desnecessária
                     if (cloudSettings && cloudSettings[1] !== JSON.stringify({
@@ -1524,6 +1525,14 @@
                     if (cloudMultipliers && cloudMultipliers[1] !== JSON.stringify(state.customMultipliers)) {
                         state.customMultipliers = JSON.parse(cloudMultipliers[1]);
                         localStorage.setItem('stockCustomMultipliers', cloudMultipliers[1]);
+                        dataChanged = true;
+                    }
+
+                    if (cloudCart && cloudCart[1] !== JSON.stringify(state.cart)) {
+                        state.cart = JSON.parse(cloudCart[1]);
+                        localStorage.setItem('stockCart', cloudCart[1]);
+                        updateCartUI();
+                        if (state.allData.length > 0) renderTable();
                         dataChanged = true;
                     }
 
@@ -2695,6 +2704,7 @@
                     updateCartUI();
                     closeModal();
                 }
+                syncDataWithTurso(); // Sincroniza alteração de edição
             } else {
                 // Add new item
                 if (!state.pendingItem) return;
@@ -2718,6 +2728,8 @@
                 
                 closeModal();
                 if (state.allData.length > 0) renderTable();
+                
+                syncDataWithTurso(); // Sincroniza novo item
             }
 
             if (state.rememberRecipient && employeeName) {
@@ -2869,6 +2881,7 @@
                 updateCartUI();
                 if (state.allData.length > 0) renderTable();
                 showToast('success', 'Removido', 'Item removido da lista.');
+                syncDataWithTurso(); // Sincroniza remoção
                 showUndoToast();
             });
         }
@@ -2881,6 +2894,7 @@
                 localStorage.removeItem('stockCart');
                 updateCartUI();
                 if (state.allData.length > 0) renderTable();
+                syncDataWithTurso(); // Sincroniza limpeza
                 showToast('success', 'Lista Limpa', 'Todos os itens foram removidos.');
             });
         }
@@ -3009,7 +3023,8 @@
                 { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "settings"}, {type: "text", value: JSON.stringify(settings)}] },
                 { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "manualOverrides"}, {type: "text", value: JSON.stringify(state.manualOverrides)}] },
                 { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "customMultipliers"}, {type: "text", value: JSON.stringify(state.customMultipliers)}] },
-                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "sheetData"}, {type: "text", value: JSON.stringify(sheetData)}] }
+                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "sheetData"}, {type: "text", value: JSON.stringify(sheetData)}] },
+                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "currentCart"}, {type: "text", value: JSON.stringify(state.cart)}] }
             ]);
             showToast('success', 'Sincronizado', 'Sistema atualizado para todos os usuários.');
         }
@@ -3601,6 +3616,7 @@
             if (field === 'type' && elements.bulkTypeInput) elements.bulkTypeInput.value = '';
             
             showToast('success', 'Atualizado', 'Alteração aplicada a todos os itens da lista.');
+            syncDataWithTurso(); // Sincroniza alterações em massa
         }
 
         // Dark Mode

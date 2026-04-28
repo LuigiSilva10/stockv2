@@ -1481,10 +1481,8 @@
 
             // Configurar sincronização automática a cada 3 segundos (Quase tempo real)
             setInterval(async () => {
-                if (state.currentView !== 'tech') { // Evita atualizar enquanto o usuário digita no identificador
-                    await syncAppDataFromCloud();
-                    await syncHistoryFromCloud();
-                }
+                await syncAppDataFromCloud();
+                await syncHistoryFromCloud();
             }, 3000);
         }
 
@@ -2959,6 +2957,7 @@
 
                     showToast('success', 'Copiado para SAP', `${state.cart.length} itens prontos. Use Alt+Tab para ir ao SAP e Cole (Ctrl+V).`);
                     saveOrderToHistory();
+                    syncDataWithTurso(); // Garante que o estado do carrinho pós-cópia seja sincronizado
 
                     // Reset button state after a longer delay
                     setTimeout(() => {

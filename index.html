@@ -903,7 +903,17 @@
                 const cloudHistory = await executeTurso([{ sql: "SELECT content FROM history ORDER BY id DESC LIMIT 50", args: [] }]);
                 if (cloudHistory && cloudHistory.results[0].response.result.rows.length > 0) {
                     const rows = cloudHistory.results[0].response.result.rows;
-                    const orders = rows.map(r => JSON.parse(r[0]));
+                    const orders = rows.map(r => {
+                        try {
+                            // Garante que r[0] é uma string e começa com '{' ou '[' antes de tentar o parse
+                            if (typeof r[0] === 'string' && (r[0].startsWith('{') || r[0].startsWith('['))) {
+                                return JSON.parse(r[0]);
+                            }
+                        } catch (e) {
+                            console.warn("Erro ao parsear item do histórico da nuvem, pulando:", r[0], e);
+                        }
+                        return null; // Retorna null para itens que não puderam ser parseados
+                    }).filter(Boolean); // Remove itens nulos do array
                     
                     // Comparação simples para evitar re-renderização desnecessária se os dados forem os mesmos
                     if (JSON.stringify(orders) !== JSON.stringify(state.orderHistory)) {
@@ -1473,6 +1483,7 @@
                     const cloudSettings = rows.find(r => r[0] === 'settings');
                     const cloudOverrides = rows.find(r => r[0] === 'manualOverrides');
                     const cloudMultipliers = rows.find(r => r[0] === 'customMultipliers');
+                    const cloudSheetData = rows.find(r => r[0] === 'sheetData');
 
                     // Comparação profunda para evitar re-renderização desnecessária
                     if (cloudSettings && cloudSettings[1] !== JSON.stringify({
@@ -1499,6 +1510,23 @@
                         state.customMultipliers = JSON.parse(cloudMultipliers[1]);
                         localStorage.setItem('stockCustomMultipliers', cloudMultipliers[1]);
                         dataChanged = true;
+                    }
+
+                    if (cloudSheetData) {
+                        const sheet = JSON.parse(cloudSheetData[1]);
+                        // Só carrega se for um arquivo diferente ou se o local estiver vazio
+                        if (sheet.fileName !== state.fileName || state.allData.length === 0) {
+                            state.fileName = sheet.fileName;
+                            state.sheetName = sheet.sheetName;
+                            state.headers = sheet.headers;
+                            state.allData = sheet.allData;
+                            
+                            // Atualiza cache local
+                            await saveLargeData('stockData', state.allData);
+                            localStorage.setItem('stockHeaders', JSON.stringify(state.headers));
+                            localStorage.setItem('stockMeta', JSON.stringify({ fileName: state.fileName, sheetName: state.sheetName }));
+                            dataChanged = true;
+                        }
                     }
 
                     if (dataChanged) {
@@ -1796,6 +1824,7 @@
                     const jsonData = XLSX.utils.sheet_to_json(worksheet, { range: headerRowIndex, defval: "" });
                     
                     await processData(jsonData);
+                    await syncDataWithTurso(); // Sincroniza com o amigo imediatamente após o upload
                     setLoading(false);
                 } catch (err) {
                     console.error('Erro ao processar Excel:', err);
@@ -2959,16 +2988,22 @@
 
         window.syncDataWithTurso = async function() {
             showToast('info', 'Sincronizando', 'Enviando dados para a nuvem...');
-            const settings = {
-                defaultDepot: state.defaultDepot,
-                allowDuplicates: state.allowDuplicates,
-                hidePrices: state.hidePrices,
-                compactMode: state.compactMode
+            
+            const settings = { defaultDepot: state.defaultDepot, allowDuplicates: state.allowDuplicates, hidePrices: state.hidePrices, compactMode: state.compactMode };
+            const sheetData = {
+                fileName: state.fileName,
+                sheetName: state.sheetName,
+                headers: state.headers,
+                allData: state.allData
             };
+
             await executeTurso([
-                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "settings"}, {type: "text", value: JSON.stringify(settings)}] }
+                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "settings"}, {type: "text", value: JSON.stringify(settings)}] },
+                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "manualOverrides"}, {type: "text", value: JSON.stringify(state.manualOverrides)}] },
+                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "customMultipliers"}, {type: "text", value: JSON.stringify(state.customMultipliers)}] },
+                { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: [{type: "text", value: "sheetData"}, {type: "text", value: JSON.stringify(sheetData)}] }
             ]);
-            showToast('success', 'Sincronizado', 'Histórico e configurações salvos no Turso.');
+            showToast('success', 'Sincronizado', 'Sistema atualizado para todos os usuários.');
         }
 
         function renderHistory() {

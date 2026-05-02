@@ -556,7 +556,7 @@
     </div>
 
     <!-- Toast Container -->
-    <div id="toast-container" class="fixed top-4 right-4 z-[100] flex flex-col gap-3 pointer-events-none"></div>
+    <div id="toast-container" class="fixed bottom-4 right-4 z-[100] flex flex-col gap-3 pointer-events-none"></div>
 
     <!-- Undo Toast -->
     <div id="undo-toast" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-[80] flex items-center gap-4 px-6 py-3 bg-slate-900 text-white rounded-full shadow-xl dark:bg-white dark:text-slate-900 transition-all duration-300 transform translate-y-10 opacity-0">
@@ -2988,8 +2988,6 @@
         }
 
         window.syncDataWithTurso = async function() {
-            showToast('info', 'Sincronizando', 'Enviando dados para a nuvem...');
-            
             const settings = { defaultDepot: state.defaultDepot, allowDuplicates: state.allowDuplicates, hidePrices: state.hidePrices, compactMode: state.compactMode };
             const sheetData = {
                 fileName: state.fileName,
@@ -3006,7 +3004,6 @@
                 { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: ["currentCart", JSON.stringify(state.cart)] },
                 { sql: "INSERT OR REPLACE INTO app_data (id, content) VALUES (?, ?)", args: ["activeRequester", state.activeRequester || "OUTROS"] }
             ]);
-            showToast('success', 'Sincronizado', 'Sistema atualizado para todos os usuários.');
         }
 
         function saveOrderToHistory() {

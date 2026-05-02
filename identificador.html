@@ -202,14 +202,14 @@ function identify() {
     const resultDesc = document.getElementById('resultDesc');
     const resultBadges = document.getElementById('resultBadges');
 
-    const normalized = input.replace(/[^a-z0-9]/g, '');
+    const normalized = input.replace(/[^a-z0-9\/]/g, '');
     let bestMatch = null;
     let maxScore = 0;
 
     MATERIALS.forEach(m => {
         let score = 0;
         m.codes.forEach(c => {
-            const cn = c.toLowerCase().replace(/[^a-z0-9]/g, '');
+            const cn = c.toLowerCase().replace(/[^a-z0-9\/]/g, '');
             if (normalized === cn) score += 10;
             else if (normalized.includes(cn) || cn.includes(normalized)) score += 5;
         });
@@ -223,7 +223,7 @@ function identify() {
         }
     });
 
-    if (bestMatch && maxScore > 2) {
+    if (bestMatch && maxScore >= 5) {
         resultCard.classList.remove('hidden');
         resultType.textContent = bestMatch.type;
         resultDesc.textContent = bestMatch.application;
